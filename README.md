@@ -7,16 +7,28 @@ This image is useful if you would like to protect some web content with an OIDC 
 ## Image
 
 ```
-docker pull ghcr.io/klebert-engineering/httpd-oidc:2.4.71   # pinned httpd version
-docker pull ghcr.io/klebert-engineering/httpd-oidc:latest
+docker pull ghcr.io/klebert-engineering/httpd-oidc:2.4.71-1   # pinned, never changes
+docker pull ghcr.io/klebert-engineering/httpd-oidc:latest     # newest release
 ```
 
-The image tag is the httpd version from the `FROM` line in the `Dockerfile`. The Build workflow builds and smoke-tests every PR (`test/smoke.sh`) and publishes on every push to `main`. A manual run (Actions → Build → Run workflow) rebuilds without cache and picks up new Debian security fixes.
+Versions are `<httpd version>-<build number>`: `2.4.71-1` is the first build on `httpd:2.4.71`, `2.4.71-2` the next one on the same httpd (for example with newer Debian security fixes), `2.4.72-1` the first one on the next httpd. A published version is never overwritten; `latest` is the only tag that moves. Each release's notes list the image digest.
+
+### Releasing
+
+The Build workflow builds and smoke-tests (`test/smoke.sh`) every PR and every push to `main`, but publishes nothing. To publish, create a GitHub release with the tag `v<httpd version>-<build number>`, e.g. `v2.4.71-1`, targeting `main`:
+
+```
+gh release create v2.4.71-1 --target main --title v2.4.71-1 --notes-file notes.md
+```
+
+The Release workflow checks that the tag matches the httpd version in the `Dockerfile` and that the version is not published yet, builds without cache, runs the smoke test, pushes `<version>` and (unless it is a prerelease) `latest`, and adds the image digest to the release notes. Write release notes in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) style (`### Security`, `### Changed`, …).
+
+`deploy.bash -t` builds the image locally and runs it with a `httpd.conf` from the repository root; it does not publish.
 
 ## Vulnerability monitoring
 
 * **Dependabot** opens a PR when a new `httpd` base image tag is published (daily) and keeps the workflow actions current (weekly).
-* **Vulnerability scan** runs daily and after each publish. It checks the httpd version in the published image against [Apache's advisories](https://httpd.apache.org/security/vulnerabilities_24.html) and scans the image with [Grype](https://github.com/anchore/grype) for packages with a fix available (high or critical). Findings are kept in one issue labeled `vulnerability-scan`, which says what to do and is closed automatically when the next scan is clean. Full Grype results are in the Security tab. The people notified are set in `NOTIFY` in `.github/workflows/vulnerability-scan.yml`.
+* **Vulnerability scan** runs daily and after each release. It checks the httpd version in the published image against [Apache's advisories](https://httpd.apache.org/security/vulnerabilities_24.html) and scans the image with [Grype](https://github.com/anchore/grype) for packages with a fix available (high or critical). Findings are kept in one issue labeled `vulnerability-scan`, which says what to do, including a link to a pre-filled form for the next release, and is closed automatically when the next scan is clean. Full Grype results are in the Security tab. The people notified are set in `NOTIFY` in `.github/workflows/vulnerability-scan.yml`.
 
 ## Minimal httpd.conf for a keycloak reverse proxy
 
