@@ -1,1 +1,2 @@
-httpd.conf
+/httpd.conf
+__pycache__/
