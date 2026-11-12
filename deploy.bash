@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 image_name="httpd-oidc"
-version="2024.1"
+version="$(sed -n 's/^FROM httpd:\([0-9][0-9.]*\).*/\1/p' Dockerfile)"
 push=""
 latest=""
 test=""
