@@ -1,5 +1,7 @@
 name: Build
 
+# Builds and smoke-tests the image. Publishing happens only from a GitHub
+# release, see release.yml.
 on:
   pull_request:
   push:
@@ -8,23 +10,12 @@ on:
 
 permissions:
   contents: read
-  packages: write
-
-env:
-  IMAGE: ghcr.io/klebert-engineering/httpd-oidc
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
-      - name: Read httpd version from Dockerfile
-        id: version
-        run: |
-          httpd="$(sed -n 's/^FROM httpd:\([0-9][0-9.]*\).*/\1/p' Dockerfile)"
-          test -n "$httpd" || { echo "no httpd version in Dockerfile FROM line"; exit 1; }
-          echo "httpd=$httpd" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
 
@@ -33,36 +24,8 @@ jobs:
         with:
           context: .
           pull: true
-          no-cache: ${{ github.event_name == 'workflow_dispatch' }}
           load: true
           tags: httpd-oidc:ci
 
       - name: Smoke test
         run: test/smoke.sh httpd-oidc:ci
-
-      - name: Image metadata
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=${{ steps.version.outputs.httpd }}
-            type=raw,value=latest
-
-      - name: Log in to ghcr.io
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push image
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}

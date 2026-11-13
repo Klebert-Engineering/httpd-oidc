@@ -20,8 +20,10 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 
+IMAGE_REPO = "ghcr.io/klebert-engineering/httpd-oidc"
 APACHE_JSON = "https://httpd.apache.org/security/vulnerabilities-httpd.json"
 APACHE_PAGE = "https://httpd.apache.org/security/vulnerabilities_24.html"
 DOCKER_HUB_TAGS = "https://hub.docker.com/v2/repositories/library/httpd/tags?page_size=100&name=2.4."
@@ -159,22 +161,60 @@ def dependabot_httpd_pr() -> dict | None:
     return prs[0] if prs else None
 
 
-def render(args, httpd: list[dict], packages: list[dict], latest: str | None, pr: dict | None) -> str:
+def next_release_tag(repo: str, httpd_version: str) -> str | None:
+    """v<httpd>-<n+1> from the existing releases, or None if they cannot be read."""
+    try:
+        releases = json.loads(gh("release", "list", "-R", repo, "--limit", "200", "--json", "tagName"))
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    pattern = re.compile(rf"^v{re.escape(httpd_version)}-(\d+)$")
+    builds = [int(m.group(1)) for r in releases if (m := pattern.match(r["tagName"]))]
+    return f"v{httpd_version}-{max(builds, default=0) + 1}"
+
+
+def release_notes(httpd: list[dict], packages: list[dict], latest: str | None) -> str:
+    """Keep a Changelog style notes for the suggested release."""
+    def ids(findings, limit=15):
+        shown = [f["id"] + (f" ({f['severity']})" if f.get("severity") else "") for f in findings[:limit]]
+        more = f" and {len(findings) - limit} more" if len(findings) > limit else ""
+        return ", ".join(shown) + more
+    lines = ["### Security", ""]
+    if httpd:
+        lines.append(f"- Update httpd to {latest or 'the latest 2.4.x'}, fixing {ids(httpd)}.")
+    if packages:
+        unique = list({f["id"]: f for f in packages}.values())
+        lines.append(f"- Rebuild with fixed Debian packages, fixing {ids(unique)}.")
+    return "\n".join(lines)
+
+
+def release_link(repo: str, tag: str, notes: str) -> str:
+    query = urllib.parse.urlencode({"tag": tag, "title": tag, "body": notes})
+    return f"https://github.com/{repo}/releases/new?{query}"
+
+
+def render(args, httpd: list[dict], packages: list[dict], latest: str | None, pr: dict | None,
+           release: dict | None) -> str:
     lines = [f"Daily scan of `{args.image}` (httpd {args.httpd_version}) found "
              f"{len(httpd)} httpd advisories and {len(packages)} fixable package vulnerabilities "
              f"({args.min_severity} or higher).", ""]
     if httpd or packages:
         lines += ["## What to do", ""]
-    if httpd:
-        target = f"`httpd:{latest}`" if latest else "the latest `httpd:2.4.x` tag"
-        if pr:
-            lines.append(f"1. Merge the Dependabot PR #{pr['number']} ({pr['title']}), which moves the base image to the new httpd.")
+        steps = []
+        if httpd:
+            target = f"`httpd:{latest}`" if latest else "the latest `httpd:2.4.x` tag"
+            if pr:
+                steps.append(f"Merge the Dependabot PR #{pr['number']} ({pr['title']}).")
+            else:
+                steps.append(f"Change `FROM` in the `Dockerfile` to {target} and merge that PR.")
+        if release:
+            steps.append(f"Create the release [`{release['tag']}`]({release['url']}): the link opens a pre-filled "
+                         f"release form. Publishing it builds, tests and pushes `{IMAGE_REPO}:{release['tag'][1:]}` "
+                         "and moves `latest`.")
         else:
-            lines.append(f"1. Change `FROM` in the `Dockerfile` to {target} and merge the PR.")
-        lines.append("2. The Build workflow publishes the new image on merge to `main`; then pull and restart the proxies.")
-    if packages and not httpd:
-        lines.append("1. Run the Build workflow on `main` (Actions → Build → Run workflow). The rebuild installs the fixed Debian packages and republishes the image.")
-        lines.append("2. Pull and restart the proxies.")
+            steps.append("Create the next release `v<httpd version>-<build number>`. Publishing it builds, tests "
+                         "and pushes the image and moves `latest`.")
+        steps.append("Pull the new version on the proxies and restart them.")
+        lines += [f"{i}. {s}" for i, s in enumerate(steps, 1)]
     if httpd:
         lines += ["", f"## httpd advisories (source: [Apache]({APACHE_PAGE}))", "",
                   "| CVE | Severity | Title |", "|---|---|---|"]
@@ -248,6 +288,8 @@ def main() -> int:
     p.add_argument("--min-severity", default="high", help="minimum Grype severity to report (default: high)")
     p.add_argument("--notify", default="", help="comma-separated GitHub logins to assign and mention")
     p.add_argument("--run-url", default="", help="link to the workflow run, for the report")
+    p.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "Klebert-Engineering/httpd-oidc"),
+                   help="owner/name of the repository (default: $GITHUB_REPOSITORY)")
     p.add_argument("--issue", action="store_true", help="sync the result to the GitHub issue")
     args = p.parse_args()
     args.notify = [u.strip() for u in args.notify.split(",")]
@@ -261,8 +303,15 @@ def main() -> int:
     packages = grype_findings(args.grype, args.min_severity) if args.grype else []
     latest = latest_httpd_tag() if httpd else None
     pr = dependabot_httpd_pr() if httpd and args.issue else None
+    release = None
+    release_version = latest if httpd else args.httpd_version
+    if (httpd or packages) and release_version:
+        tag = next_release_tag(args.repo, release_version)
+        if tag:
+            notes = release_notes(httpd, packages, latest)
+            release = {"tag": tag, "url": release_link(args.repo, tag, notes)}
 
-    body = render(args, httpd, packages, latest, pr)
+    body = render(args, httpd, packages, latest, pr, release)
     print(body)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
